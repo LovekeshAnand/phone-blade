@@ -1,26 +1,43 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@theme {
+  --color-ink-0: #000000;
+  --color-ink-1: #181818;
+  --color-ink-2: #1f1f1f;
+  --color-ink-3: #272727;
+  --color-ink-4: #313131;
+  --color-blade-l: #ff7a1a;
+  --color-blade-r: #19e6ff;
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+html, body { background: #000; overscroll-behavior: none; }
+[hidden] { display: none !important; }
+h1, h2, h3 { text-wrap: balance; }
+p { text-wrap: pretty; }
+
+/* Hit and miss text rises and fades */
+.judge { animation: judge 600ms var(--ease-soft) forwards; }
+@keyframes judge {
+  from { opacity: 1; transform: translate(-50%, 0) scale(1.1); }
+  to { opacity: 0; transform: translate(-50%, -24px) scale(1); }
+}
+
+/* Phone flashes when it recalibrates */
+.flash { animation: flash 400ms var(--ease-soft) forwards; }
+@keyframes flash { from { opacity: 0.4; } to { opacity: 0; } }
+
+/* Panels settle into place */
+.rise { animation: rise 600ms var(--ease-soft) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(32px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .judge, .flash { animation-duration: 1ms; }
+  .rise { animation: fade 300ms var(--ease-soft) both; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 }
