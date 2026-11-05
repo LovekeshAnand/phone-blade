@@ -18,7 +18,7 @@ const LEAD_IN = 2.5; // seconds of song before the first block, so blocks have t
 /**
  * Beat-track mono samples: onset envelope → tempo by autocorrelation → best phase → walk the grid,
  * nudging each beat toward the nearest strong onset. Quiet passages get low energy = fewer blocks.
- * ponytail: one global tempo + local snapping. Songs with big tempo changes (live recordings, medleys) will drift.
+ * Note: one global tempo + local snapping. Songs with big tempo changes (live recordings, medleys) will drift.
  */
 export function analyze(samples: Float32Array, sr: number): { bpm: number; beats: number[]; energy: number[] } {
   const frames = Math.floor(samples.length / HOP), fps = sr / HOP;
@@ -116,7 +116,7 @@ export async function loadSong(data: ArrayBuffer, title: string, info?: SongInfo
 }
 
 /** Faster songs → harder. Energy is relative to each song's own peaks, so it can't rank songs against each other.
- * ponytail: tempo-only thresholds; tune after playing real songs (romantic ballads ~70–95 BPM, dance tracks ~100–130). */
+ * Note: tempo-only thresholds; tune after playing real songs (romantic ballads ~70–95 BPM, dance tracks ~100–130). */
 export function suggestDifficulty({ bpm }: Pick<SongInfo, 'bpm'>): Difficulty {
   return bpm < 90 ? 'easy' : bpm < 118 ? 'normal' : 'hard';
 }

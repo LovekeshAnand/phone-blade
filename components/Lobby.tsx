@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import QRCode from 'qrcode';
-import { CheckCircleIcon, FolderOpenIcon, MusicNotesIcon, SignOutIcon, TrophyIcon } from '@phosphor-icons/react';
+import { CheckCircleIcon, FolderOpenIcon, GoogleLogoIcon, MusicNotesIcon, SignOutIcon, TrophyIcon } from '@phosphor-icons/react';
 import { authClient } from '@/lib/auth/client';
 import { DIFFICULTY, type Difficulty } from '@/lib/beatmap';
 import { HAND_COLOR, HAND_NAME, type Hand, type Remotes } from '@/lib/protocol';
@@ -222,6 +222,13 @@ function SongRow({ active, onClick, title, meta, badge }: { active: boolean; onC
   );
 }
 
+/** The auth SDK throws on HTTP errors, so read its message instead of guessing at the cause. */
+function errorText(err: unknown) {
+  const e = err as { message?: string; status?: number } | null;
+  if (e?.status === 403) return 'Sign in is blocked for this site address. The site owner needs to add it as a trusted domain in Neon Auth.';
+  return e?.message || 'Could not reach the sign in service. Check your connection and try again.';
+}
+
 function AccountPanel() {
   const [mode, setMode] = useState<'in' | 'up'>('in');
   const [busy, setBusy] = useState(false);
@@ -237,16 +244,33 @@ function AccountPanel() {
     try {
       const res = mode === 'up' ? await authClient.signUp.email({ email, password, name }) : await authClient.signIn.email({ email, password });
       if (res.error) setError(res.error.message || 'That did not work. Check your details and try again.');
-    } catch {
-      setError('Could not reach the sign in service. Check your connection and try again.');
+    } catch (err) {
+      setError(errorText(err));
     } finally { setBusy(false); }
+  }
+
+  async function google() {
+    setBusy(true); setError('');
+    try {
+      const res = await authClient.signIn.social({ provider: 'google', callbackURL: location.origin + '/' });
+      if (res?.error) setError(res.error.message || 'Google sign in did not start. Try again.');
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    } // on success the browser leaves for Google, so busy stays on
   }
 
   const field = 'w-full rounded-lg border border-ink-4 bg-ink-2 px-3 py-2 text-base text-white placeholder:text-neutral-500 focus:border-neutral-400 focus:outline-none';
   return (
     <Panel title={mode === 'in' ? 'Sign in to play' : 'Create your player'}>
       <p className="mb-4 text-sm text-neutral-400">Your scores go on the leaderboard under your player name.</p>
-      <form onSubmit={submit} className="flex flex-col gap-3" noValidate={false}>
+      <Button type="button" variant="secondary" size="lg" className="w-full" disabled={busy} onClick={google}>
+        <GoogleLogoIcon size={20} weight="bold" aria-hidden />Continue with Google
+      </Button>
+      <div className="my-4 flex items-center gap-3 text-sm text-neutral-500" aria-hidden>
+        <span className="h-px flex-1 bg-ink-4" />or use email<span className="h-px flex-1 bg-ink-4" />
+      </div>
+      <form onSubmit={submit} className="flex flex-col gap-3">
         {mode === 'up' && (
           <label className="flex flex-col gap-2 text-sm font-semibold">Player name
             <input name="name" required minLength={2} maxLength={40} autoComplete="nickname" className={field} placeholder="Riya" />

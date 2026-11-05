@@ -1,7 +1,7 @@
 import { db } from '@/lib/db';
 
 // WebRTC pairing mailbox. Codes are random and only live in a game screen's QR codes, so knowing one is the access check.
-// ponytail: no rate limit. Add one (e.g. Vercel Firewall rule on /api/signal) if the endpoint gets abused.
+// Note: no rate limit. Add one (e.g. Vercel Firewall rule on /api/signal) if the endpoint gets abused.
 const CODE = /^[A-Za-z0-9_-]{20,64}$/;
 const KINDS = new Set(['offer', 'answer']);
 

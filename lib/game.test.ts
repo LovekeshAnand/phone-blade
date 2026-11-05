@@ -1,30 +1,52 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vector3 } from 'three';
-import { phoneQuat, recenterOffset, UP } from './orientation';
+import { bladeDir, calibrate, yawOf } from './orientation';
+import { steady, tiltDeg, turnDeg, type Sample } from './calibration';
 import { DIFFICULTY, notesForBeat, type Difficulty, type Flow } from './beatmap';
 import { analyze, suggestDifficulty, synthTrack } from './track';
 import type { Hand } from './protocol';
 
-const blade = (a: number, b: number, g: number) => UP.clone().applyQuaternion(phoneQuat(a, b, g));
+const DEG = 180 / Math.PI;
 const near = (v: Vector3, x: number, y: number, z: number) => assert.ok(v.distanceTo(new Vector3(x, y, z)) < 1e-6, `${v.toArray()}`);
 
 test('phone attitude maps to blade direction', () => {
-  near(blade(0, 0, 0), 0, 0, -1); // flat, top edge forward
-  near(blade(0, 90, 0), 0, 1, 0); // tipped up
-  near(blade(90, 0, 0), -1, 0, 0); // alpha is counter-clockwise → left
-  near(blade(0, 0, 60), 0, 0, -1); // rolling the wrist doesn't move the blade
-  // recenter: any heading + a slight tilt becomes exactly "straight at the screen"
-  for (const [a, b] of [[137, 10], [-30, -15], [5, 0]]) {
-    const raw = phoneQuat(a, b, 25);
-    near(UP.clone().applyQuaternion(recenterOffset(raw).multiply(raw)), 0, 0, -1);
+  near(bladeDir(0, 0), 0, 0, -1); // flat, top edge forward
+  near(bladeDir(0, 90), 0, 1, 0); // tipped up
+  near(bladeDir(90, 0), -1, 0, 0); // alpha is counter-clockwise → left
+  near(bladeDir(90, 0, true), 1, 0, 0); // a mirrored phone turns the other way
+});
+
+test('calibration: any center becomes straight ahead, turns keep their direction, sensitivity scales them', () => {
+  for (const [a, b] of [[137, 10], [-30, -15], [5, 0], [250, 25]]) {
+    const c = bladeDir(a, b);
+    near(calibrate(c, c, 1), 0, 0, -1);
+    near(calibrate(c, c, 0.6), 0, 0, -1); // sensitivity never moves the center
   }
-  // after recentering, turning the phone still turns the blade the same way
-  const raw = phoneQuat(137, 0, 0), fix = recenterOffset(raw);
-  near(UP.clone().applyQuaternion(fix.clone().multiply(phoneQuat(137 + 90, 0, 0))), -1, 0, 0);
-  // a steep tilt (aiming at a high TV) is only levelled by 30°
-  const steep = phoneQuat(0, 50, 0), up = UP.clone().applyQuaternion(recenterOffset(steep).multiply(steep));
-  assert.ok(Math.abs(Math.asin(up.y) * 180 / Math.PI - 20) < 1e-6, `left ${up.y}`);
+  const c = bladeDir(137, 0);
+  near(calibrate(bladeDir(137 + 90, 0), c, 1), -1, 0, 0); // turning left from center → blade left
+  // sensitivity: a 20° turn right becomes 10° at 50% and 30° at 150%
+  const right20 = bladeDir(137 - 20, 0);
+  assert.ok(Math.abs(yawOf(calibrate(right20, c, 0.5)) * DEG - 10) < 1e-6);
+  assert.ok(Math.abs(yawOf(calibrate(right20, c, 1.5)) * DEG - 30) < 1e-6);
+  // a steep center (aiming at a high TV) is only levelled by 30°
+  const steep = bladeDir(0, 50);
+  assert.ok(Math.abs(Math.asin(calibrate(steep, steep, 1).y) * DEG - 20) < 1e-6);
+});
+
+test('guided calibration checks', () => {
+  const hold = (a: number, b: number, ms = 800): Sample[] => Array.from({ length: 20 }, (_, i) => ({ t: (i * ms) / 19, a: a + Math.sin(i) * 0.3, b }));
+  assert.ok(steady(hold(10, 0), 800), 'small hand tremor still counts as steady');
+  const swing: Sample[] = Array.from({ length: 20 }, (_, i) => ({ t: i * 40, a: i * 2, b: 0 }));
+  assert.ok(!steady(swing, 760), 'a moving phone is not steady');
+  assert.ok(!steady(hold(10, 0).slice(-3), 800), 'needs enough history');
+  // The 90° bug: holding the phone upright made the heading meaningless. Tilt check rejects that pose.
+  assert.ok(Math.abs(tiltDeg({ t: 0, a: 0, b: 85 })) > 40);
+  assert.ok(Math.abs(tiltDeg({ t: 0, a: 0, b: 8 })) < 40);
+  // Turning right lowers alpha on a normal phone, so it reads as a positive turn; a mirrored phone reads negative.
+  assert.ok(Math.abs(turnDeg({ t: 0, a: 30, b: 0 }, { t: 0, a: 0, b: 0 }) - 30) < 1e-6);
+  assert.ok(turnDeg({ t: 0, a: 30, b: 0 }, { t: 0, a: 60, b: 0 }) < 0);
+  assert.ok(Math.abs(turnDeg({ t: 0, a: 350, b: 0 }, { t: 0, a: 10, b: 0 }) + 20) < 1e-6, 'wraps across 0/360');
 });
 
 test('beatmap adapts to solo and duo', () => {

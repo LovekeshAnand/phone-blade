@@ -6,15 +6,15 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { Music } from './audio';
 import { DIFFICULTY, notesForBeat, type Difficulty, type DifficultyCfg, type Dir, type Flow, type Note } from './beatmap';
-import { phoneQuat, recenterOffset, UP } from './orientation';
+import { bladeDir, calibrate, UP } from './orientation';
 import { HANDS, HAND_COLOR, type Hand, type Remotes } from './protocol';
 import { synthTrack, type Track } from './track';
 
-// ponytail: tuning knobs. Real phone sensors differ, so adjust these after playing.
+// Note: tuning knobs. Real phone sensors differ, so adjust these after playing.
 // Adaptive smoothing: a still hand gets SMOOTH_MIN (hides sensor jitter); the faster the swing, the closer to raw (no lag).
 const SMOOTH_MIN = 0.4; // per 60fps frame, 1 = raw
 const SMOOTH_GAIN = 8; // per radian the blade is behind its target
-const PREDICT = 0.03; // seconds of motion extrapolation to hide Wi-Fi/sensor delay (0 = off; too high overshoots at swing ends)
+const PREDICT = 0.012; // seconds of motion extrapolation to hide network delay (0 = off; higher overshoots at the end of swings and feels twitchy)
 const MIN_SWING = 2.0; // blade tip speed (m/s) needed for a clean cut
 const BLADE = 1.25; // reach from the hand (m)
 const HIT_R = 0.3, BOMB_R = 0.2;
@@ -31,7 +31,8 @@ export interface Results { score: number; maxCombo: number; hits: number; total:
 export interface EngineEvents { stats(s: Stats): void; end(r: Results): void; haptic(h: Hand, good: boolean): void }
 
 interface Saber {
-  group: THREE.Group; target: THREE.Quaternion; prev: THREE.Quaternion; offset: THREE.Quaternion; needsCal: boolean;
+  group: THREE.Group; target: THREE.Quaternion; prev: THREE.Quaternion;
+  center: THREE.Vector3; mirror: boolean; gain: number; needsCal: boolean; // calibration
   sample: THREE.Quaternion; sampleAt: number; // last sensor pose, for prediction
   tip: THREE.Vector3; vel: THREE.Vector3; trail: Trail;
 }
@@ -39,7 +40,7 @@ interface Block { root: THREE.Group; note: Note; time: number; spin: number }
 interface Debris { mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>; vel: THREE.Vector3; spin: THREE.Vector3; life: number }
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
-const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _seg = new THREE.Line3();
+const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _d = new THREE.Vector3(), _d2 = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _seg = new THREE.Line3();
 
 /** Ribbon behind the blade tip, faded via vertex colours under additive blending. */
 class Trail {
@@ -177,15 +178,13 @@ export class Engine {
   // ---------- public API ----------
   get mode(): Mode { return this.remotes.L && this.remotes.R ? 'duo' : this.remotes.L || this.remotes.R ? 'solo' : 'mouse'; }
 
-  setRemotes(r: Remotes) {
-    for (const h of HANDS) if (r[h] && !this.remotes[h]) this.sabers[h].needsCal = true;
-    this.remotes = { ...r };
-  }
+  setRemotes(r: Remotes) { this.remotes = { ...r }; }
 
-  orient(h: Hand, a: number, b: number, g: number) {
-    const s = this.sabers[h], raw = phoneQuat(a, b, g, _q), now = performance.now() / 1000;
-    if (s.needsCal) { recenterOffset(raw, s.offset); s.needsCal = false; s.sampleAt = 0; }
-    const q = _q2.copy(s.offset).multiply(raw);
+  orient(h: Hand, a: number, b: number) {
+    const s = this.sabers[h], now = performance.now() / 1000;
+    bladeDir(a, b, s.mirror, _d);
+    if (s.needsCal) { s.center.copy(_d); s.needsCal = false; s.sampleAt = 0; } // provisional until the phone's calibration arrives
+    const q = _q2.setFromUnitVectors(UP, calibrate(_d, s.center, s.gain, _d2));
     // Predict a little ahead from the last two samples to hide the Wi-Fi + sensor delay.
     const gap = now - s.sampleAt;
     if (s.sampleAt && gap > 0.004 && gap < 0.08) s.target.slerpQuaternions(s.sample, q, 1 + Math.min(2, PREDICT / gap));
@@ -194,7 +193,16 @@ export class Engine {
     s.sampleAt = now;
   }
 
+  /** The next motion sample becomes "straight at the screen". */
   recenter(h: Hand) { this.sabers[h].needsCal = true; }
+
+  /** Calibration from the phone's guided setup: center pose, left/right direction, sensitivity. */
+  configure(h: Hand, c: { center?: [number, number]; mirror?: boolean; gain?: number }) {
+    const s = this.sabers[h];
+    if (typeof c.mirror === 'boolean') s.mirror = c.mirror;
+    if (Number.isFinite(c.gain)) s.gain = Math.min(1.5, Math.max(0.5, c.gain!));
+    if (c.center) { bladeDir(c.center[0], c.center[1], s.mirror, s.center); s.needsCal = false; s.sampleAt = 0; }
+  }
 
   /** song = a beat-tracked audio file, or null for the built-in synth track. */
   start(difficulty: Difficulty, song: Track | null = null) {
@@ -280,7 +288,7 @@ export class Engine {
     group.quaternion.copy(rest);
     const trail = new Trail(color);
     this.scene.add(group, trail.mesh);
-    return { group, target: rest.clone(), prev: rest.clone(), offset: new THREE.Quaternion(), needsCal: true, sample: rest.clone(), sampleAt: 0, tip: this.along(group, BLADE, new THREE.Vector3()), vel: new THREE.Vector3(), trail };
+    return { group, target: rest.clone(), prev: rest.clone(), center: new THREE.Vector3(0, 0, -1), mirror: false, gain: 0.9, needsCal: true, sample: rest.clone(), sampleAt: 0, tip: this.along(group, BLADE, new THREE.Vector3()), vel: new THREE.Vector3(), trail };
   }
 
   private along(g: THREE.Object3D, dist: number, out: THREE.Vector3, q = g.quaternion) {

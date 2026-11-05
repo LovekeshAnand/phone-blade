@@ -5,7 +5,7 @@ let ready: Promise<void> | null = null;
 
 /**
  * The Neon client, with tables created on first use.
- * ponytail: inline idempotent schema instead of a migration tool. Move to migrations once the schema starts changing.
+ * Note: inline idempotent schema instead of a migration tool. Move to migrations once the schema starts changing.
  */
 export async function db() {
   ready ??= (async () => {

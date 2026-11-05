@@ -27,7 +27,7 @@ export async function POST(req: Request) {
 
   const b = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   const total = Number(b?.total), score = Number(b?.score), accuracy = Number(b?.accuracy), maxCombo = Number(b?.maxCombo);
-  // ponytail: scores are computed in the player's browser, so this only rejects impossible values, not a determined cheater.
+  // Note: scores are computed in the player's browser, so this only rejects impossible values, not a determined cheater.
   const valid = b && typeof b.song === 'string' && b.song.length > 0 && b.song.length <= 200
     && typeof b.difficulty === 'string' && b.difficulty in DIFFICULTY
     && typeof b.mode === 'string' && MODES.has(b.mode) && typeof b.rank === 'string' && RANKS.has(b.rank)

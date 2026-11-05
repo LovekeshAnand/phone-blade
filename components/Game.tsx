@@ -64,7 +64,8 @@ export default function Game() {
       haptic: (h, good) => pairing.current?.send(h, { t: 'hit', good }),
     });
     const p = new DisplayPairing(codes, {
-      motion: (h, a, b, g) => e.orient(h, a, b, g),
+      motion: (h, a, b) => e.orient(h, a, b),
+      config: (h, c) => e.configure(h, c),
       cal: (h) => e.recenter(h),
       status: (h, live) => {
         remotesRef.current = { ...remotesRef.current, [h]: live };

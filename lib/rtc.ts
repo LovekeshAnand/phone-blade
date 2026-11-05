@@ -6,7 +6,9 @@ import { HANDS, type Hand } from './protocol';
 // Neon only carries the one-time handshake (offer/answer) through /api/signal.
 
 export type CtlToPhone = { t: 'hit'; good: boolean };
-export type CtlToDisplay = { t: 'cal' };
+/** cal = recenter on the next pose. cfg = result of the guided calibration and/or a new sensitivity. */
+export type Calibration = { center?: [number, number]; mirror?: boolean; gain?: number };
+export type CtlToDisplay = { t: 'cal' } | ({ t: 'cfg' } & Calibration);
 
 let ice: Promise<RTCIceServer[]> | null = null;
 const iceServers = () =>
@@ -41,8 +43,9 @@ export function newCode() {
 }
 
 interface DisplayEvents {
-  motion(h: Hand, a: number, b: number, g: number): void;
+  motion(h: Hand, a: number, b: number): void;
   cal(h: Hand): void;
+  config(h: Hand, c: Calibration): void;
   status(h: Hand, live: boolean): void;
 }
 
@@ -77,12 +80,20 @@ export class DisplayPairing {
 
   private async accept(h: Hand, sdp: string) {
     this.peers[h]?.pc.close(); // a rescan or reconnect replaces the old link
+    this.ev.cal(h); // forget the previous phone's calibration before this one's messages arrive
     const pc = new RTCPeerConnection({ iceServers: await iceServers() });
     const peer: { pc: RTCPeerConnection; ctl?: RTCDataChannel } = { pc };
     this.peers[h] = peer;
     pc.ondatachannel = ({ channel }) => {
-      if (channel.label === 'motion') channel.onmessage = (e) => { const [a, b, g] = JSON.parse(e.data); this.ev.motion(h, a, b, g); };
-      else { peer.ctl = channel; channel.onmessage = (e) => { if ((JSON.parse(e.data) as CtlToDisplay).t === 'cal') this.ev.cal(h); }; }
+      if (channel.label === 'motion') channel.onmessage = (e) => { const [a, b] = JSON.parse(e.data); this.ev.motion(h, a, b); };
+      else {
+        peer.ctl = channel;
+        channel.onmessage = (e) => {
+          const m = JSON.parse(e.data) as CtlToDisplay;
+          if (m.t === 'cal') this.ev.cal(h);
+          else if (m.t === 'cfg') this.ev.config(h, { center: m.center, mirror: m.mirror, gain: m.gain });
+        };
+      }
     };
     pc.onconnectionstatechange = () => { if (this.peers[h] === peer) this.setLive(h, pc.connectionState === 'connected'); };
     await pc.setRemoteDescription({ type: 'offer', sdp });
@@ -109,7 +120,10 @@ export type PhoneState = 'connecting' | 'live' | 'lost';
 export async function connectPhone(code: string, onCtl: (m: CtlToPhone) => void, onState: (s: PhoneState) => void) {
   const pc = new RTCPeerConnection({ iceServers: await iceServers() });
   const motion = pc.createDataChannel('motion', { ordered: false, maxRetransmits: 0 }); // stale poses are useless: never resend
-  const ctl = pc.createDataChannel('ctl'); // reliable: recenter taps and haptics must arrive
+  const ctl = pc.createDataChannel('ctl'); // reliable: calibration and haptics must arrive
+  const queued: string[] = []; // messages sent before the channel opens go out the moment it does
+  ctl.onopen = () => { for (const m of queued.splice(0)) ctl.send(m); };
+  const sendCtl = (m: CtlToDisplay) => { const s = JSON.stringify(m); if (ctl.readyState === 'open') ctl.send(s); else queued.push(s); };
   ctl.onmessage = (e) => onCtl(JSON.parse(e.data));
   pc.onconnectionstatechange = () =>
     onState(pc.connectionState === 'connected' ? 'live' : ['failed', 'disconnected', 'closed'].includes(pc.connectionState) ? 'lost' : 'connecting');
@@ -125,10 +139,11 @@ export async function connectPhone(code: string, onCtl: (m: CtlToPhone) => void,
   if (!pc.remoteDescription) { pc.close(); throw new Error('The game screen did not answer. Make sure it is open, then scan again.'); }
 
   return {
-    motion(a: number, b: number, g: number) {
-      if (motion.readyState === 'open' && motion.bufferedAmount < 2048) motion.send(JSON.stringify([+a.toFixed(1), +b.toFixed(1), +g.toFixed(1)]));
+    motion(a: number, b: number) {
+      if (motion.readyState === 'open' && motion.bufferedAmount < 2048) motion.send(JSON.stringify([+a.toFixed(1), +b.toFixed(1)]));
     },
-    cal() { if (ctl.readyState === 'open') ctl.send(JSON.stringify({ t: 'cal' } satisfies CtlToDisplay)); },
+    cal() { sendCtl({ t: 'cal' }); },
+    config(c: Calibration) { sendCtl({ t: 'cfg', ...c }); },
     close() { pc.close(); },
   };
 }
