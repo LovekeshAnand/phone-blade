@@ -132,6 +132,13 @@ export default function Remote() {
     return () => clearInterval(iv);
   }, [stage]);
 
+  // Tell the game screen which calibration step is showing, so it can show the blade and target ring.
+  useEffect(() => {
+    const l = linkRef.current;
+    if (stage === 'center' || stage === 'edge') l?.step(stage);
+    else if (stage === 'live') l?.step('done');
+  }, [stage]);
+
   async function start() {
     setError('');
     const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };

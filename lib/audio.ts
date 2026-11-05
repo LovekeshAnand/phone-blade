@@ -81,5 +81,7 @@ export class Music {
     else { this.hit(t, 0.5, 200, 0.8, 'lowpass'); this.tone('sine', 50, t, 0.4, 0.6, 200); }
   }
 
+  pause() { this.ctx.suspend().catch(() => {}); }
+  resume() { this.ctx.resume().catch(() => {}); }
   close() { this.ctx.close().catch(() => {}); }
 }

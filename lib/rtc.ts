@@ -8,7 +8,9 @@ import { HANDS, type Hand } from './protocol';
 export type CtlToPhone = { t: 'hit'; good: boolean };
 /** cal = recenter on the next pose. cfg = result of the guided calibration and/or a new sensitivity. */
 export type Calibration = { center?: [number, number]; mirror?: boolean; gain?: number };
-export type CtlToDisplay = { t: 'cal' } | ({ t: 'cfg' } & Calibration);
+export type CalibStage = 'center' | 'edge' | 'done';
+/** step = which guided calibration step the phone is showing, so the game screen can show its calibration view. */
+export type CtlToDisplay = { t: 'cal' } | ({ t: 'cfg' } & Calibration) | { t: 'step'; step: CalibStage };
 
 let ice: Promise<RTCIceServer[]> | null = null;
 const iceServers = () =>
@@ -46,6 +48,7 @@ interface DisplayEvents {
   motion(h: Hand, a: number, b: number): void;
   cal(h: Hand): void;
   config(h: Hand, c: Calibration): void;
+  step(h: Hand, step: CalibStage): void;
   status(h: Hand, live: boolean): void;
 }
 
@@ -92,6 +95,7 @@ export class DisplayPairing {
           const m = JSON.parse(e.data) as CtlToDisplay;
           if (m.t === 'cal') this.ev.cal(h);
           else if (m.t === 'cfg') this.ev.config(h, { center: m.center, mirror: m.mirror, gain: m.gain });
+          else if (m.t === 'step' && ['center', 'edge', 'done'].includes(m.step)) this.ev.step(h, m.step);
         };
       }
     };
@@ -144,6 +148,7 @@ export async function connectPhone(code: string, onCtl: (m: CtlToPhone) => void,
     },
     cal() { sendCtl({ t: 'cal' }); },
     config(c: Calibration) { sendCtl({ t: 'cfg', ...c }); },
+    step(step: CalibStage) { sendCtl({ t: 'step', step }); },
     close() { pc.close(); },
   };
 }

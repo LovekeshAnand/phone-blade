@@ -29,6 +29,26 @@ export interface Judge { id: number; text: string; good: boolean }
 export interface Stats { score: number; combo: number; mult: number; energy: number; progress: number; judge: Judge | null }
 export interface Results { score: number; maxCombo: number; hits: number; total: number; accuracy: number; rank: string; failed: boolean; difficulty: Difficulty; title: string }
 export interface EngineEvents { stats(s: Stats): void; end(r: Results): void; haptic(h: Hand, good: boolean): void }
+export type CalibStep = 'center' | 'edge';
+
+/** What the engine needs from the soundtrack. `Music` in the game; a scripted clock when rendering the trailer frame by frame. */
+export interface SongClock {
+  readonly now: number;
+  beat(t: number, beat: number, B: number, energy: number): void;
+  sfx(kind: 'cut' | 'bad' | 'bomb'): void;
+  play(buffer: AudioBuffer, at: number): void;
+  pause(): void;
+  resume(): void;
+  close(): void;
+}
+
+const VIEW = {
+  play: { pos: new THREE.Vector3(0, 1.55, 1.0), look: new THREE.Vector3(0, 1.05, -5) },
+  // Close behind the hands, so the blade being calibrated fills the screen and points into it.
+  calibrate: { pos: new THREE.Vector3(0, 1.2, 0.45), look: new THREE.Vector3(0, 1.0, -3) },
+};
+const WHITE = new THREE.Color(1, 1, 1);
+const EDGE_YAW = 25 * Math.PI / 180; // where the step 2 target ring sits (any turn past 12° completes the step)
 
 interface Saber {
   group: THREE.Group; target: THREE.Quaternion; prev: THREE.Quaternion;
@@ -118,7 +138,11 @@ export class Engine {
   private camera = new THREE.PerspectiveCamera(70, 1, 0.05, 120);
   private sabers: Record<Hand, Saber>;
   private remotes: Remotes = { L: false, R: false };
-  private music: Music | null = null;
+  private music: SongClock | null = null;
+  /** Attract mode: the engine swings both blades itself, perfectly on the beat. Used for the trailer. */
+  autopilot = false;
+  private calib: Partial<Record<Hand, { step: CalibStep; ring: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial> }>> = {};
+  private cam = { pos: VIEW.play.pos.clone(), look: VIEW.play.look.clone(), toPos: VIEW.play.pos.clone(), toLook: VIEW.play.look.clone(), locked: false };
   private state: 'idle' | 'playing' | 'paused' = 'idle';
   private difficulty: Difficulty = 'normal';
   private cfg: DifficultyCfg = DIFFICULTY.normal;
@@ -157,7 +181,7 @@ export class Engine {
     spikes: new THREE.LineBasicMaterial({ color: new THREE.Color(2, 0.15, 0.3) }),
   };
 
-  constructor(private canvas: HTMLCanvasElement, private ev: EngineEvents) {
+  constructor(private canvas: HTMLCanvasElement, private ev: EngineEvents, private makeMusic: () => SongClock = () => new Music()) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
     this.camera.position.set(0, 1.55, 1.0);
@@ -204,10 +228,45 @@ export class Engine {
     if (c.center) { bladeDir(c.center[0], c.center[1], s.mirror, s.center); s.needsCal = false; s.sampleAt = 0; }
   }
 
+  /**
+   * Show the calibration view for a blade: the camera moves in close behind the hands and a glowing ring marks
+   * where the blade tip should point (step 1: straight at the screen, step 2: to the right). null hides it.
+   */
+  showCalibration(h: Hand, step: CalibStep | null) {
+    const cur = this.calib[h];
+    if (cur && (!step || cur.step !== step)) { this.scene.remove(cur.ring); cur.ring.geometry.dispose(); cur.ring.material.dispose(); delete this.calib[h]; }
+    if (step && !this.calib[h]) {
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.095, 48), new THREE.MeshBasicMaterial({ color: this.colors[h], transparent: true, side: THREE.DoubleSide, depthWrite: false }));
+      this.scene.add(ring);
+      this.calib[h] = { step, ring };
+    }
+    if (!this.cam.locked) {
+      const v = Object.keys(this.calib).length ? VIEW.calibrate : VIEW.play;
+      this.cam.toPos.copy(v.pos); this.cam.toLook.copy(v.look);
+    }
+  }
+
+  /** Take over the camera (trailer shots). Pass null to hand it back to the game. */
+  setCamera(pos: THREE.Vector3Like | null, look?: THREE.Vector3Like, instant = false) {
+    this.cam.locked = !!pos;
+    const v = Object.keys(this.calib).length ? VIEW.calibrate : VIEW.play;
+    this.cam.toPos.copy(pos ?? v.pos); this.cam.toLook.copy(look ?? v.look);
+    if (instant) { this.cam.pos.copy(this.cam.toPos); this.cam.look.copy(this.cam.toLook); }
+  }
+
+  /** Blade length from 0 (hilt only) to 1 (full), for the ignition effect. */
+  ignite(k: number) {
+    const len = BLADE - 0.1, f = Math.max(0.001, Math.min(1, k));
+    for (const h of HANDS) for (const m of this.sabers[h].group.children.slice(1)) { m.scale.y = f; m.position.y = 0.1 + (len * f) / 2; }
+  }
+
+  /** Where a blade points right now (world space, unit vector). */
+  bladeDirection(h: Hand, out = new THREE.Vector3()) { return out.copy(UP).applyQuaternion(this.sabers[h].group.quaternion); }
+
   /** song = a beat-tracked audio file, or null for the built-in synth track. */
   start(difficulty: Difficulty, song: Track | null = null) {
     this.quit();
-    this.music = new Music();
+    this.music = this.makeMusic();
     this.difficulty = difficulty;
     const base = DIFFICULTY[difficulty];
     this.track = song ?? synthTrack(base.bpm);
@@ -223,8 +282,8 @@ export class Engine {
     this.state = 'playing';
     this.emit();
   }
-  pause() { if (this.state === 'playing') { this.music?.ctx.suspend(); this.state = 'paused'; } }
-  resume() { if (this.state === 'paused') { this.music?.ctx.resume(); this.state = 'playing'; } }
+  pause() { if (this.state === 'playing') { this.music?.pause(); this.state = 'paused'; } }
+  resume() { if (this.state === 'paused') { this.music?.resume(); this.state = 'playing'; } }
   quit() {
     this.music?.close();
     this.music = null;
@@ -323,6 +382,8 @@ export class Engine {
     const active = this.activeHands();
     const t = this.music && this.state !== 'idle' ? this.music.now : nowMs / 1000;
 
+    if (this.autopilot && this.state === 'playing') for (const h of active) this.autoAim(h, t);
+
     for (const h of HANDS) {
       const s = this.sabers[h], on = active.includes(h);
       s.group.visible = s.trail.mesh.visible = on;
@@ -349,10 +410,49 @@ export class Engine {
       d.mesh.material.opacity = clamp01(d.life / 0.9);
       if (d.life <= 0) { this.scene.remove(d.mesh); d.mesh.material.dispose(); this.debris.splice(i, 1); }
     }
+    this.updateCalibration(nowMs / 1000);
     this.shake = Math.max(0, this.shake - dt * 0.25);
-    this.camera.position.set((Math.random() - 0.5) * this.shake, 1.55 + (Math.random() - 0.5) * this.shake, 1.0);
+    const ease = 1 - Math.exp(-dt * 3); // camera glides between views
+    this.cam.pos.lerp(this.cam.toPos, ease);
+    this.cam.look.lerp(this.cam.toLook, ease);
+    this.camera.position.set(this.cam.pos.x + (Math.random() - 0.5) * this.shake, this.cam.pos.y + (Math.random() - 0.5) * this.shake, this.cam.pos.z);
+    this.camera.lookAt(this.cam.look);
     this.composer.render();
   };
+
+  /** Calibration rings sit where the blade tip should be; they pulse, and lock bright when the tip lines up. */
+  private updateCalibration(t: number) {
+    for (const h of HANDS) {
+      const c = this.calib[h];
+      if (!c) continue;
+      const s = this.sabers[h], yaw = c.step === 'edge' ? EDGE_YAW : 0;
+      c.ring.position.set(s.group.position.x + Math.sin(yaw) * BLADE, s.group.position.y, s.group.position.z - Math.cos(yaw) * BLADE);
+      c.ring.lookAt(this.camera.position);
+      const locked = s.tip.distanceTo(c.ring.position) < 0.12;
+      c.ring.scale.setScalar(locked ? 1.15 : 1 + 0.12 * Math.sin(t * 6));
+      c.ring.material.color.copy(this.colors[h]).lerp(WHITE, locked ? 0.55 : 0).multiplyScalar(locked ? 1.15 : 1.2); // a soft lock, not a bloom flare
+    }
+  }
+
+  /** Attract mode: wind up opposite the arrow, then sweep through the next block of this hand exactly on its beat. */
+  private autoAim(h: Hand, now: number) {
+    const s = this.sabers[h];
+    let next: Block | null = null, after: Block | null = null;
+    for (const b of this.blocks) {
+      if (b.note.bomb || b.note.hand !== h || b.time < now - 0.15) continue;
+      if (!next || b.time < next.time) { after = next; next = b; } else if (!after || b.time < after.time) after = b;
+    }
+    const pivot = s.group.position;
+    if (!next) { // idle sway while waiting
+      _v.set(pivot.x + Math.sin(now * 1.7 + (h === 'L' ? 1 : 0)) * 0.15, 1.05, pivot.z - 1);
+    } else {
+      const d = DIR_VEC[next.note.dir] ?? [0, -1];
+      const half = after && after.time - next.time < 0.35 ? 0.055 : 0.08; // quicker swings for fast pairs
+      const k = -0.7 + 1.4 * clamp01((now - next.time + half) / (2 * half)); // -0.7 wound up → +0.7 follow through
+      _v.set(next.root.position.x + d[0] * k, next.root.position.y + d[1] * k, HIT_Z);
+    }
+    s.target.setFromUnitVectors(UP, _v2.subVectors(_v, pivot).normalize());
+  }
 
   private updateWorld(t: number, dt: number) {
     let pulse = 0.3 + 0.2 * Math.sin(t * 2);
@@ -399,6 +499,7 @@ export class Engine {
   }
 
   private spawn(note: Note, time: number) {
+    if (note.bomb && this.autopilot) return; // attract mode plays a clean run
     const root = new THREE.Group();
     if (note.bomb) root.add(new THREE.Mesh(this.geo.bomb, this.mat.bomb), new THREE.LineSegments(this.geo.spikes, this.mat.spikes));
     else {

@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { PauseIcon } from '@phosphor-icons/react';
-import { Engine, type Mode, type Results, type Stats } from '@/lib/engine';
+import { CrosshairIcon, ArrowRightIcon } from '@phosphor-icons/react';
+import { Engine, type CalibStep, type Mode, type Results, type Stats } from '@/lib/engine';
 import { DIFFICULTY, type Difficulty } from '@/lib/beatmap';
-import type { Hand, Remotes } from '@/lib/protocol';
+import { HAND_COLOR, HAND_NAME, HANDS, type Hand, type Remotes } from '@/lib/protocol';
 import { DisplayPairing, newCode } from '@/lib/rtc';
 import type { Track } from '@/lib/track';
 import { Lobby } from './Lobby';
@@ -37,6 +38,7 @@ export default function Game() {
   const [results, setResults] = useState<Results | null>(null);
   const [save, setSave] = useState<Save | null>(null);
   const [boardVersion, setBoardVersion] = useState(0);
+  const [calib, setCalib] = useState<Partial<Record<Hand, CalibStep>>>({}); // blades whose phone is calibrating
 
   useEffect(() => {
     async function submit(r: Results) {
@@ -67,10 +69,16 @@ export default function Game() {
       motion: (h, a, b) => e.orient(h, a, b),
       config: (h, c) => e.configure(h, c),
       cal: (h) => e.recenter(h),
+      step: (h, step) => {
+        const s = step === 'done' ? null : step;
+        e.showCalibration(h, s);
+        setCalib((c) => { const n = { ...c }; if (s) n[h] = s; else delete n[h]; return n; });
+      },
       status: (h, live) => {
         remotesRef.current = { ...remotesRef.current, [h]: live };
         e.setRemotes(remotesRef.current);
         setRemotes(remotesRef.current);
+        if (!live) { e.showCalibration(h, null); setCalib((c) => { const n = { ...c }; delete n[h]; return n; }); }
       },
     });
     engine.current = e;
@@ -102,11 +110,14 @@ export default function Game() {
     <div className="fixed inset-0 overflow-hidden bg-black text-white">
       <canvas ref={canvas} className="absolute inset-0 size-full" />
 
-      <div hidden={phase !== 'lobby'} className="absolute inset-0 bg-black/70">
+      {/* While a phone calibrates, the lobby steps aside so the zoomed in blade and its target ring are visible. */}
+      <div hidden={phase !== 'lobby' || HANDS.some((h) => calib[h])} className="absolute inset-0 bg-black/70">
         <Lobby active={phase === 'lobby'} remotes={remotes} codes={codes} boardVersion={boardVersion} onPlay={play} />
       </div>
 
       {(phase === 'playing' || phase === 'paused') && stats && <Hud stats={stats} onPause={pause} />}
+
+      {HANDS.some((h) => calib[h]) && <CalibrationGuide calib={calib} compact={phase !== 'lobby'} />}
 
       {phase === 'paused' && (
         <Overlay>
@@ -165,6 +176,23 @@ function Hud({ stats, onPause }: { stats: Stats; onPause(): void }) {
         </div>
       )}
     </>
+  );
+}
+
+function CalibrationGuide({ calib, compact }: { calib: Partial<Record<Hand, CalibStep>>; compact: boolean }) {
+  return (
+    <div className={`rise pointer-events-none absolute inset-x-0 flex flex-col items-center gap-3 px-6 ${compact ? 'top-20' : 'top-12'}`} role="status">
+      {!compact && <h2 className="text-3xl font-bold">Calibrating</h2>}
+      {(['R', 'L'] as Hand[]).filter((h) => calib[h]).map((h) => (
+        <div key={h} className="flex items-center gap-4 rounded-2xl border border-ink-4 bg-ink-1/90 px-6 py-4 backdrop-blur">
+          {calib[h] === 'center' ? <CrosshairIcon size={32} style={{ color: HAND_COLOR[h] }} aria-hidden /> : <ArrowRightIcon size={32} style={{ color: HAND_COLOR[h] }} aria-hidden />}
+          <div>
+            <p className="text-sm font-semibold" style={{ color: HAND_COLOR[h] }}>{HAND_NAME[h]} blade · Step {calib[h] === 'center' ? 1 : 2} of 2</p>
+            <p className="text-lg">{calib[h] === 'center' ? 'Point at the middle of the screen. Put the blade tip in the ring.' : 'Now turn to the right edge of the screen.'}</p>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
