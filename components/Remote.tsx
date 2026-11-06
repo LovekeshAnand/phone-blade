@@ -109,7 +109,11 @@ export default function Remote() {
         ok = Math.abs(tilt) < MAX_TILT;
         hint = ok ? 'Hold still' : tilt > 0 ? 'Lower the phone. Point it at the screen, not the ceiling.' : 'Raise the phone. Point it at the screen, not the floor.';
       } else {
-        ok = Math.abs(turnDeg(center.current!, last)) >= MIN_TURN;
+        // Flip left/right live from the physical turn, so the on-screen blade heads for the ring either way.
+        // Otherwise a mirrored phone's blade goes left, the player steers it right by turning left, and stays mirrored.
+        const turn = turnDeg(center.current!, last), mirror = turn < 0;
+        if (Math.abs(turn) > 4 && cfg.current.mirror !== mirror) { cfg.current = { ...cfg.current, mirror }; linkRef.current?.config(cfg.current); }
+        ok = Math.abs(turn) >= MIN_TURN;
         hint = ok ? 'Hold still' : 'Turn the phone to the right edge of the screen';
       }
       holdStart = ok && steady(samples.current, now) ? holdStart || now : 0;
