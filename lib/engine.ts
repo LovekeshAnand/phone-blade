@@ -9,6 +9,7 @@ import { DIFFICULTY, notesForBeat, type Difficulty, type DifficultyCfg, type Dir
 import { bladeDir, calibrate, UP } from './orientation';
 import { HANDS, HAND_COLOR, type Hand, type Remotes } from './protocol';
 import { synthTrack, type Track } from './track';
+import { swingScore } from './swing';
 
 // Note: tuning knobs. Real phone sensors differ, so adjust these after playing.
 // Adaptive smoothing: a still hand gets SMOOTH_MIN (hides sensor jitter); the faster the swing, the closer to raw (no lag).
@@ -21,6 +22,11 @@ const HIT_R = 0.3, BOMB_R = 0.2;
 const HIT_Z = -1.1, SPAWN_Z = -28, MISS_Z = 0.8, CUT_FROM = -2.4, CUT_TO = -0.1;
 const LANES = [-0.75, -0.25, 0.25, 0.75], ROWS = [0.72, 1.12, 1.52];
 const HAND_X = 0.3, HAND_Y = 1.0, HAND_Z = -0.2;
+// Arm model: phones know only their angle, so the hand drifts toward where the blade points. Big swings sweep wide
+// arcs, small ones stay tight. 0 pins the hand in place.
+const ARM = 0.25, REST_Y = Math.cos(Math.PI / 2.4);
+const POST_WINDOW = 0.25; // seconds of follow-through counted after a cut
+const SWING_STILL = 0.8; // tip speed (m/s) below which the blade counts as still and the swing arc restarts
 const DIR_VEC: Record<Dir, [number, number] | null> = { up: [0, 1], down: [0, -1], left: [-1, 0], right: [1, 0], any: null };
 const DIR_ROT: Record<Dir, number> = { up: 0, down: Math.PI, left: Math.PI / 2, right: -Math.PI / 2, any: 0 };
 
@@ -55,7 +61,10 @@ interface Saber {
   center: THREE.Vector3; mirror: boolean; gain: number; needsCal: boolean; // calibration
   sample: THREE.Quaternion; sampleAt: number; // last sensor pose, for prediction
   tip: THREE.Vector3; vel: THREE.Vector3; trail: Trail;
+  baseX: number; prevPos: THREE.Vector3; // arm model
+  arc: number; swing: THREE.Vector3; // degrees turned in the current swing, and its direction on screen
 }
+interface Pending { h: Hand; start: number; post: number; off: number; until: number }
 interface Block { root: THREE.Group; note: Note; time: number; spin: number }
 interface Debris { mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>; vel: THREE.Vector3; spin: THREE.Vector3; life: number }
 
@@ -153,6 +162,7 @@ export class Engine {
   private flow: Flow = { L: 'up', R: 'up' };
   private blocks: Block[] = [];
   private debris: Debris[] = [];
+  private pending: Pending[] = []; // cuts waiting for their follow-through to be scored
   private sparks = new Sparks();
   private rings: THREE.LineSegments[] = [];
   private ringMat = new THREE.LineBasicMaterial();
@@ -274,6 +284,7 @@ export class Engine {
     this.cfg = { ...base, density: base.density * Math.min(1.2, Math.max(0.5, base.bpm / this.track.bpm)) };
     this.pulseIdx = 0;
     this.st = { score: 0, combo: 0, maxCombo: 0, hits: 0, total: 0, points: 0, energy: 0.6 };
+    this.pending = [];
     this.judge = null;
     this.flow = { L: 'up', R: 'up' };
     this.songStart = this.music.now + 0.4;
@@ -347,11 +358,12 @@ export class Engine {
     group.quaternion.copy(rest);
     const trail = new Trail(color);
     this.scene.add(group, trail.mesh);
-    return { group, target: rest.clone(), prev: rest.clone(), center: new THREE.Vector3(0, 0, -1), mirror: false, gain: 0.9, needsCal: true, sample: rest.clone(), sampleAt: 0, tip: this.along(group, BLADE, new THREE.Vector3()), vel: new THREE.Vector3(), trail };
+    return { group, target: rest.clone(), prev: rest.clone(), center: new THREE.Vector3(0, 0, -1), mirror: false, gain: 0.9, needsCal: true, sample: rest.clone(), sampleAt: 0, tip: this.along(group, BLADE, new THREE.Vector3()), vel: new THREE.Vector3(), trail,
+      baseX: group.position.x, prevPos: group.position.clone(), arc: 0, swing: new THREE.Vector3() };
   }
 
-  private along(g: THREE.Object3D, dist: number, out: THREE.Vector3, q = g.quaternion) {
-    return out.copy(UP).multiplyScalar(dist).applyQuaternion(q).add(g.position);
+  private along(g: THREE.Object3D, dist: number, out: THREE.Vector3, q = g.quaternion, pos = g.position) {
+    return out.copy(UP).multiplyScalar(dist).applyQuaternion(q).add(pos);
   }
 
   private resize = () => {
@@ -388,17 +400,21 @@ export class Engine {
       const s = this.sabers[h], on = active.includes(h);
       s.group.visible = s.trail.mesh.visible = on;
       const x = active.length === 2 ? (h === 'L' ? -HAND_X : HAND_X) : 0;
-      s.group.position.x += (x - s.group.position.x) * Math.min(1, dt * 6);
+      s.baseX += (x - s.baseX) * Math.min(1, dt * 6);
       s.prev.copy(s.group.quaternion);
+      s.prevPos.copy(s.group.position);
       const follow = Math.min(1, SMOOTH_MIN + s.group.quaternion.angleTo(s.target) * SMOOTH_GAIN);
       s.group.quaternion.slerp(s.target, 1 - (1 - follow) ** (dt * 60));
+      _d.copy(UP).applyQuaternion(s.group.quaternion);
+      s.group.position.set(s.baseX + ARM * _d.x, HAND_Y + ARM * (_d.y - REST_Y), HAND_Z);
       this.along(s.group, BLADE, _v);
       s.vel.lerp(_v2.subVectors(_v, s.tip).divideScalar(dt), 0.5);
       s.tip.copy(_v);
+      this.trackSwing(s);
       s.trail.push(this.along(s.group, 0.45, _v2), s.tip);
     }
 
-    if (this.state === 'playing') this.updateSong(t, active);
+    if (this.state === 'playing') { this.updateSong(t, active); this.scorePending(t); }
     this.updateWorld(t, dt);
     this.sparks.update(dt);
     for (let i = this.debris.length - 1; i >= 0; i--) {
@@ -419,6 +435,32 @@ export class Engine {
     this.camera.lookAt(this.cam.look);
     this.composer.render();
   };
+
+  /** Measure how far the blade has turned in one continuous direction: a reversal or a pause starts a new swing. */
+  private trackSwing(s: Saber) {
+    const sp = Math.hypot(s.vel.x, s.vel.y);
+    if (sp < SWING_STILL) { s.arc = 0; s.swing.set(0, 0, 0); return; }
+    _v2.set(s.vel.x / sp, s.vel.y / sp, 0);
+    const turned = s.prev.angleTo(s.group.quaternion) * (180 / Math.PI);
+    s.arc = s.swing.dot(_v2) > 0 ? s.arc + turned : turned;
+    s.swing.copy(_v2);
+  }
+
+  /** Follow-through: keep counting the arc after a cut until the swing stops, reverses, or the window closes. */
+  private scorePending(now: number) {
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      const p = this.pending[i], s = this.sabers[p.h], post = s.arc - p.start;
+      const broke = post < p.post; // the arc restarted: the swing ended
+      if (!broke) p.post = post;
+      if (!broke && now < p.until) continue;
+      const { pts, text } = swingScore(p.start, p.post, p.off);
+      this.st.points += pts;
+      this.st.score += pts * this.mult;
+      this.setJudge(text, true);
+      this.pending.splice(i, 1);
+      this.emit();
+    }
+  }
 
   /** Calibration rings sit where the blade tip should be; they pulse, and lock bright when the tip lines up. */
   private updateCalibration(t: number) {
@@ -517,14 +559,17 @@ export class Engine {
   private remove(i: number) { this.scene.remove(this.blocks[i].root); this.blocks.splice(i, 1); }
 
   /** Which blade touches pos? Samples 5 blade poses between frames so fast swings can't tunnel through. */
+  private hitOff = 0; // how far from the block's center the last touch was, 0 to 1
   private touching(pos: THREE.Vector3, active: Hand[], radius: number): Hand | null {
     for (const h of active) {
       const s = this.sabers[h];
       for (let k = 0; k <= 4; k++) {
         _q.slerpQuaternions(s.prev, s.group.quaternion, k / 4);
-        this.along(s.group, 0.1, _seg.start, _q);
-        this.along(s.group, BLADE, _seg.end, _q);
-        if (_seg.closestPointToPoint(pos, true, _v).distanceTo(pos) < radius) return h;
+        _d2.lerpVectors(s.prevPos, s.group.position, k / 4);
+        this.along(s.group, 0.1, _seg.start, _q, _d2);
+        this.along(s.group, BLADE, _seg.end, _q, _d2);
+        const dist = _seg.closestPointToPoint(pos, true, _v).distanceTo(pos);
+        if (dist < radius) { this.hitOff = dist / radius; return h; }
       }
     }
     return null;
@@ -545,12 +590,10 @@ export class Engine {
     this.ev.haptic(h, !problem);
     if (problem) { this.music?.sfx('bad'); this.shake = 0.04; this.fail(problem); return; }
 
-    const pts = Math.round(70 + 30 * clamp01((sp - MIN_SWING) / 5));
-    const st = this.st;
-    st.combo++; st.maxCombo = Math.max(st.maxCombo, st.combo); st.hits++; st.total++; st.points += pts;
-    st.score += pts * this.mult;
+    const st = this.st, now = this.music?.now ?? 0;
+    st.combo++; st.maxCombo = Math.max(st.maxCombo, st.combo); st.hits++; st.total++;
     st.energy = Math.min(1, st.energy + 0.025);
-    this.setJudge(pts >= 95 ? 'PERFECT' : pts >= 85 ? 'GREAT' : 'GOOD', true);
+    this.pending.push({ h, start: s.arc, post: 0, off: this.hitOff, until: now + POST_WINDOW }); // scored once the follow-through is in
     this.music?.sfx('cut');
 
     const ang = Math.atan2(v.y, v.x), perp = new THREE.Vector3(-Math.sin(ang), Math.cos(ang), 0), color = this.colors[b.note.hand];
@@ -587,6 +630,7 @@ export class Engine {
   }
 
   private finish(failed: boolean) {
+    this.scorePending(Infinity); // score any follow-through still open
     const st = this.st, accuracy = st.total ? st.points / (st.total * 100) : 0;
     const rank = failed ? 'F' : accuracy >= 0.9 ? 'S' : accuracy >= 0.8 ? 'A' : accuracy >= 0.65 ? 'B' : accuracy >= 0.5 ? 'C' : 'D';
     this.quit();

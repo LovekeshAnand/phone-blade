@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vector3 } from 'three';
 import { bladeDir, calibrate, yawOf } from './orientation';
+import { swingScore } from './swing';
 import { meanPose, steady, tiltDeg, turnDeg, type Sample } from './calibration';
 import { DIFFICULTY, notesForBeat, type Difficulty, type Flow } from './beatmap';
 import { analyze, suggestDifficulty, synthTrack } from './track';
@@ -97,4 +98,13 @@ test('meanPose averages across the 0/360 wrap', () => {
   const m = meanPose([{ t: 0, a: 358, b: 10 }, { t: 10, a: 2, b: 20 }], 10);
   assert.ok(Math.abs(m.a) < 1e-6 || Math.abs(m.a - 360) < 1e-6);
   assert.ok(Math.abs(m.b - 15) < 1e-6);
+});
+
+test('swing score rewards full swings over half swings', () => {
+  assert.deepEqual(swingScore(90, 60, 0), { pts: 100, text: 'PERFECT' });
+  const half = swingScore(45, 30, 0);
+  assert.equal(half.pts, 60);
+  assert.ok(swingScore(30, 60, 0).text === 'UNDERSWING');
+  assert.ok(swingScore(90, 10, 0).text === 'FOLLOW THROUGH');
+  assert.ok(swingScore(200, 200, 0.5).pts === 90, 'arcs cap, accuracy still counts');
 });
