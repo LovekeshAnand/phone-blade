@@ -21,3 +21,13 @@ export function turnDeg(from: Sample, to: Sample) {
   const d = yawOf(bladeDir(to.a, to.b)) - yawOf(bladeDir(from.a, from.b));
   return Math.atan2(Math.sin(d), Math.cos(d)) * DEG;
 }
+
+const RAD = Math.PI / 180;
+const circ = (xs: number[]) => Math.atan2(xs.reduce((s, x) => s + Math.sin(x * RAD), 0), xs.reduce((s, x) => s + Math.cos(x * RAD), 0)) * DEG;
+
+/** Average pose of the last `ms`, so a calibration step captures the held pose, not one jittery sample. Angles wrap. */
+export function meanPose(samples: Sample[], now: number, ms = 400): Sample {
+  const r = samples.filter((s) => now - s.t <= ms);
+  const use = r.length ? r : samples.slice(-1);
+  return { t: now, a: (circ(use.map((s) => s.a)) + 360) % 360, b: circ(use.map((s) => s.b)) };
+}

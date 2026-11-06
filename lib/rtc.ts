@@ -88,7 +88,14 @@ export class DisplayPairing {
     const peer: { pc: RTCPeerConnection; ctl?: RTCDataChannel } = { pc };
     this.peers[h] = peer;
     pc.ondatachannel = ({ channel }) => {
-      if (channel.label === 'motion') channel.onmessage = (e) => { const [a, b] = JSON.parse(e.data); this.ev.motion(h, a, b); };
+      if (channel.label === 'motion') {
+        let last = -1; // the channel is unordered: a late, older pose would yank the blade back, so drop it
+        channel.onmessage = (e) => {
+          const [a, b, n] = JSON.parse(e.data);
+          if (typeof n === 'number') { if (n <= last) return; last = n; }
+          this.ev.motion(h, a, b);
+        };
+      }
       else {
         peer.ctl = channel;
         channel.onmessage = (e) => {
@@ -142,9 +149,10 @@ export async function connectPhone(code: string, onCtl: (m: CtlToPhone) => void,
   }
   if (!pc.remoteDescription) { pc.close(); throw new Error('The game screen did not answer. Make sure it is open, then scan again.'); }
 
+  let seq = 0;
   return {
     motion(a: number, b: number) {
-      if (motion.readyState === 'open' && motion.bufferedAmount < 2048) motion.send(JSON.stringify([+a.toFixed(1), +b.toFixed(1)]));
+      if (motion.readyState === 'open' && motion.bufferedAmount < 2048) motion.send(JSON.stringify([+a.toFixed(2), +b.toFixed(2), seq++]));
     },
     cal() { sendCtl({ t: 'cal' }); },
     config(c: Calibration) { sendCtl({ t: 'cfg', ...c }); },

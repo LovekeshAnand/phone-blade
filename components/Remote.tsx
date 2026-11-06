@@ -4,14 +4,14 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowRightIcon, CrosshairIcon, DeviceMobileIcon, WarningCircleIcon } from '@phosphor-icons/react';
 import { HAND_COLOR, HAND_NAME, type Hand } from '@/lib/protocol';
 import { connectPhone, type Calibration, type PhoneState } from '@/lib/rtc';
-import { steady, tiltDeg, turnDeg, type Sample } from '@/lib/calibration';
+import { meanPose, steady, tiltDeg, turnDeg, type Sample } from '@/lib/calibration';
 import { Button } from './ui';
 
 type Stage = 'intro' | 'pairing' | 'center' | 'edge' | 'live';
 type Link = Awaited<ReturnType<typeof connectPhone>>;
 
 const SENS_KEY = 'phone-blades:sensitivity';
-const HOLD_MS = 800; // hold steady this long to capture a calibration step
+const HOLD_MS = 500; // hold steady this long to capture a calibration step
 const MAX_TILT = 40; // the center pose must be roughly level: this is what prevents sideways calibrations
 const MIN_TURN = 12; // degrees the phone must turn toward the right edge
 
@@ -120,14 +120,15 @@ export default function Remote() {
       const hold = holdStart ? Math.min(1, (now - holdStart) / HOLD_MS) : 0;
       setWizard({ hint, hold });
       if (hold < 1) return;
+      const pose = meanPose(samples.current, now);
       if (stage === 'center') {
-        center.current = last;
-        cfg.current = { ...cfg.current, center: [last.a, last.b], mirror: false };
+        center.current = pose;
+        cfg.current = { ...cfg.current, center: [pose.a, pose.b], mirror: false };
         linkRef.current?.config(cfg.current);
         navigator.vibrate?.(20);
         setStage('edge');
       } else {
-        cfg.current = { ...cfg.current, mirror: turnDeg(center.current!, last) < 0 };
+        cfg.current = { ...cfg.current, mirror: turnDeg(center.current!, pose) < 0 };
         linkRef.current?.config(cfg.current);
         navigator.vibrate?.([20, 40, 20]);
         setStage('live');

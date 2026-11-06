@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vector3 } from 'three';
 import { bladeDir, calibrate, yawOf } from './orientation';
-import { steady, tiltDeg, turnDeg, type Sample } from './calibration';
+import { meanPose, steady, tiltDeg, turnDeg, type Sample } from './calibration';
 import { DIFFICULTY, notesForBeat, type Difficulty, type Flow } from './beatmap';
 import { analyze, suggestDifficulty, synthTrack } from './track';
 import type { Hand } from './protocol';
@@ -91,4 +91,10 @@ test('difficulty suggestion follows tempo', () => {
   assert.equal(suggestDifficulty({ bpm: 80 }), 'easy'); // slow romantic
   assert.equal(suggestDifficulty({ bpm: 105 }), 'normal'); // groovy
   assert.equal(suggestDifficulty({ bpm: 130 }), 'hard'); // dhol banger
+});
+
+test('meanPose averages across the 0/360 wrap', () => {
+  const m = meanPose([{ t: 0, a: 358, b: 10 }, { t: 10, a: 2, b: 20 }], 10);
+  assert.ok(Math.abs(m.a) < 1e-6 || Math.abs(m.a - 360) < 1e-6);
+  assert.ok(Math.abs(m.b - 15) < 1e-6);
 });

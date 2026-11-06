@@ -12,9 +12,9 @@ import { synthTrack, type Track } from './track';
 
 // Note: tuning knobs. Real phone sensors differ, so adjust these after playing.
 // Adaptive smoothing: a still hand gets SMOOTH_MIN (hides sensor jitter); the faster the swing, the closer to raw (no lag).
-const SMOOTH_MIN = 0.4; // per 60fps frame, 1 = raw
+const SMOOTH_MIN = 0.75; // per 60fps frame, 1 = raw
 const SMOOTH_GAIN = 8; // per radian the blade is behind its target
-const PREDICT = 0.012; // seconds of motion extrapolation to hide network delay (0 = off; higher overshoots at the end of swings and feels twitchy)
+const PREDICT = 0.016; // seconds of motion extrapolation to hide network delay (0 = off; higher overshoots at the end of swings and feels twitchy)
 const MIN_SWING = 2.0; // blade tip speed (m/s) needed for a clean cut
 const BLADE = 1.25; // reach from the hand (m)
 const HIT_R = 0.3, BOMB_R = 0.2;
