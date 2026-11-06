@@ -13,8 +13,8 @@ import { swingScore } from './swing';
 
 // Note: tuning knobs. Real phone sensors differ, so adjust these after playing.
 // Adaptive smoothing: a still hand gets SMOOTH_MIN (hides sensor jitter); the faster the swing, the closer to raw (no lag).
-const SMOOTH_MIN = 0.22; // per 60fps frame, 1 = raw
-const SMOOTH_GAIN = 10; // per radian the blade is behind its target
+const SMOOTH_MIN = 0.14; // per 60fps frame, 1 = raw
+const SMOOTH_GAIN = 7; // per radian the blade is behind its target
 const PREDICT = 0; // seconds of motion extrapolation to hide network delay (0 = off; higher overshoots at the end of swings and feels twitchy)
 const MIN_SWING = 1.5; // blade tip speed (m/s) needed for a clean cut
 const BLADE = 1.25; // reach from the hand (m)
