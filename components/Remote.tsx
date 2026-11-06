@@ -16,7 +16,7 @@ const MAX_TILT = 40; // the center pose must be roughly level: this is what prev
 const MIN_TURN = 12; // degrees the phone must turn toward the right edge
 
 function storedSensitivity() {
-  try { const v = Number(localStorage.getItem(SENS_KEY)); return v >= 50 && v <= 150 ? v : 90; } catch { return 90; }
+  try { const v = Number(localStorage.getItem(SENS_KEY)); return v >= 50 && v <= 150 ? v : 80; } catch { return 80; }
 }
 
 export default function Remote() {

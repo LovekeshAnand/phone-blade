@@ -13,13 +13,13 @@ import { swingScore } from './swing';
 
 // Note: tuning knobs. Real phone sensors differ, so adjust these after playing.
 // Adaptive smoothing: a still hand gets SMOOTH_MIN (hides sensor jitter); the faster the swing, the closer to raw (no lag).
-const SMOOTH_MIN = 0.75; // per 60fps frame, 1 = raw
-const SMOOTH_GAIN = 8; // per radian the blade is behind its target
-const PREDICT = 0.016; // seconds of motion extrapolation to hide network delay (0 = off; higher overshoots at the end of swings and feels twitchy)
-const MIN_SWING = 2.0; // blade tip speed (m/s) needed for a clean cut
+const SMOOTH_MIN = 0.22; // per 60fps frame, 1 = raw
+const SMOOTH_GAIN = 10; // per radian the blade is behind its target
+const PREDICT = 0; // seconds of motion extrapolation to hide network delay (0 = off; higher overshoots at the end of swings and feels twitchy)
+const MIN_SWING = 1.5; // blade tip speed (m/s) needed for a clean cut
 const BLADE = 1.25; // reach from the hand (m)
-const HIT_R = 0.3, BOMB_R = 0.2;
-const HIT_Z = -1.1, SPAWN_Z = -28, MISS_Z = 0.8, CUT_FROM = -2.4, CUT_TO = -0.1;
+const HIT_R = 0.42, BOMB_R = 0.2; // touch radius: a bit wider than the block, so near misses still cut
+const HIT_Z = -0.9, SPAWN_Z = -28, MISS_Z = 0.8, CUT_FROM = -2.4, CUT_TO = -0.1;
 const LANES = [-0.75, -0.25, 0.25, 0.75], ROWS = [0.72, 1.12, 1.52];
 const HAND_X = 0.3, HAND_Y = 1.0, HAND_Z = -0.2;
 // Arm model: phones know only their angle, so the hand drifts toward where the blade points. Big swings sweep wide
@@ -175,11 +175,11 @@ export class Engine {
   private shake = 0;
   private colors = { L: new THREE.Color(HAND_COLOR.L), R: new THREE.Color(HAND_COLOR.R) };
   private geo = {
-    block: new RoundedBoxGeometry(0.4, 0.4, 0.4, 3, 0.05),
-    edges: new THREE.EdgesGeometry(new THREE.BoxGeometry(0.41, 0.41, 0.41)),
+    block: new RoundedBoxGeometry(0.46, 0.46, 0.46, 3, 0.06),
+    edges: new THREE.EdgesGeometry(new THREE.BoxGeometry(0.47, 0.47, 0.47)),
     arrow: new THREE.ShapeGeometry(new THREE.Shape([new THREE.Vector2(-0.13, -0.06), new THREE.Vector2(0.13, -0.06), new THREE.Vector2(0, 0.09)])),
     dot: new THREE.CircleGeometry(0.06, 24),
-    half: new THREE.BoxGeometry(0.4, 0.2, 0.4),
+    half: new THREE.BoxGeometry(0.46, 0.23, 0.46),
     bomb: new THREE.IcosahedronGeometry(0.17, 1),
     spikes: new THREE.EdgesGeometry(new THREE.OctahedronGeometry(0.27)),
   };
@@ -358,7 +358,7 @@ export class Engine {
     group.quaternion.copy(rest);
     const trail = new Trail(color);
     this.scene.add(group, trail.mesh);
-    return { group, target: rest.clone(), prev: rest.clone(), center: new THREE.Vector3(0, 0, -1), mirror: false, gain: 0.9, needsCal: true, sample: rest.clone(), sampleAt: 0, tip: this.along(group, BLADE, new THREE.Vector3()), vel: new THREE.Vector3(), trail,
+    return { group, target: rest.clone(), prev: rest.clone(), center: new THREE.Vector3(0, 0, -1), mirror: false, gain: 0.8, needsCal: true, sample: rest.clone(), sampleAt: 0, tip: this.along(group, BLADE, new THREE.Vector3()), vel: new THREE.Vector3(), trail,
       baseX: group.position.x, prevPos: group.position.clone(), arc: 0, swing: new THREE.Vector3() };
   }
 
@@ -527,7 +527,8 @@ export class Engine {
       b.root.rotation.z = b.spin * (1 - ease);
       if (b.note.bomb) { b.root.rotation.x += 0.03; b.root.rotation.y += 0.02; }
       if (z > CUT_FROM && z < CUT_TO) {
-        const h = this.touching(b.root.position, active, b.note.bomb ? BOMB_R : HIT_R);
+        const order = active.includes(b.note.hand) ? [b.note.hand, ...active.filter((x) => x !== b.note.hand)] : active; // own blade first
+        const h = this.touching(b.root.position, order, b.note.bomb ? BOMB_R : HIT_R);
         if (h) { this.cut(b, h); this.remove(i); continue; }
       }
       if (z > MISS_Z) {
@@ -546,7 +547,7 @@ export class Engine {
     if (note.bomb) root.add(new THREE.Mesh(this.geo.bomb, this.mat.bomb), new THREE.LineSegments(this.geo.spikes, this.mat.spikes));
     else {
       const mark = new THREE.Mesh(note.dir === 'any' ? this.geo.dot : this.geo.arrow, this.mat.mark);
-      mark.position.z = 0.205;
+      mark.position.z = 0.235;
       mark.rotation.z = DIR_ROT[note.dir];
       root.add(new THREE.Mesh(this.geo.block, this.mat.block[note.hand]), new THREE.LineSegments(this.geo.edges, this.mat.edge[note.hand]), mark);
     }
